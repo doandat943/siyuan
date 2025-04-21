@@ -39,6 +39,13 @@ type System struct {
 	NetworkServe bool          `json:"networkServe"` // 是否开启网络伺服
 	NetworkProxy *NetworkProxy `json:"networkProxy"`
 
+	// Server mode configuration
+	ServerMode bool   `json:"serverMode"` // Whether to run in server mode
+	ServerHost string `json:"serverHost"` // Server host address
+	ServerPort string `json:"serverPort"` // Server port
+	JWTSecret  string `json:"jwtSecret"`  // JWT secret key for authentication
+	CORSOrigins []string `json:"corsOrigins"` // Allowed CORS origins
+
 	DisableGoogleAnalytics bool `json:"disableGoogleAnalytics"`
 	DownloadInstallPkg     bool `json:"downloadInstallPkg"`
 	AutoLaunch2            int  `json:"autoLaunch2"`    // 0：不自动启动，1：自动启动，2：自动启动+隐藏主窗口
@@ -56,6 +63,11 @@ func NewSystem() *System {
 		KernelVersion:      util.Ver,
 		NetworkProxy:       &NetworkProxy{},
 		DownloadInstallPkg: true,
+		ServerMode:         false,
+		ServerHost:         "0.0.0.0",
+		ServerPort:         "6806",
+		JWTSecret:         util.GenRandomStr(32),
+		CORSOrigins:       []string{"*"},
 	}
 }
 

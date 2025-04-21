@@ -47,6 +47,7 @@ import (
 	"github.com/siyuan-note/siyuan/kernel/server/proxy"
 	"github.com/siyuan-note/siyuan/kernel/util"
 	"golang.org/x/net/webdav"
+	"github.com/dgrijalva/jwt-go"
 )
 
 const (
@@ -171,7 +172,10 @@ func Serve(fastMode bool) {
 	api.ServeAPI(ginServer)
 
 	var host string
-	if model.Conf.System.NetworkServe || util.ContainerDocker == util.Container {
+	if model.Conf.System.ServerMode {
+		host = model.Conf.System.ServerHost
+		util.ServerPort = model.Conf.System.ServerPort
+	} else if model.Conf.System.NetworkServe || util.ContainerDocker == util.Container {
 		host = "0.0.0.0"
 	} else {
 		host = "127.0.0.1"
@@ -197,9 +201,14 @@ func Serve(fastMode bool) {
 	}
 	util.ServerPort = port
 
-	util.ServerURL, err = url.Parse("http://127.0.0.1:" + port)
+	if model.Conf.System.ServerMode {
+		util.ServerURL, err = url.Parse(fmt.Sprintf("http://%s:%s", host, port))
+	} else {
+		util.ServerURL, err = url.Parse("http://127.0.0.1:" + port)
+	}
 	if err != nil {
-		logging.LogErrorf("parse server url failed: %s", err)
+		logging.LogErrorf("parse url failed: %s", err)
+		os.Exit(logging.ExitCodeUnavailablePort)
 	}
 
 	pid := fmt.Sprintf("%d", os.Getpid())
@@ -794,41 +803,34 @@ func shortReqMsg(msg []byte) []byte {
 }
 
 func corsMiddleware() gin.HandlerFunc {
-	allowMethods := strings.Join(HttpMethods, ", ")
-	allowWebDavMethods := strings.Join(WebDavMethods, ", ")
-	allowCalDavMethods := strings.Join(CalDavMethods, ", ")
-	allowCardDavMethods := strings.Join(CardDavMethods, ", ")
-
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Allow-Headers", "origin, Content-Length, Content-Type, Authorization")
-		c.Header("Access-Control-Allow-Private-Network", "true")
+		method := c.Request.Method
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			// Check if origin is allowed
+			allowed := false
+			if model.Conf.System.ServerMode {
+				for _, allowedOrigin := range model.Conf.System.CORSOrigins {
+					if allowedOrigin == "*" || allowedOrigin == origin {
+						allowed = true
+						break
+					}
+				}
+			} else {
+				allowed = true
+			}
 
-		if strings.HasPrefix(c.Request.RequestURI, "/webdav") {
-			c.Header("Access-Control-Allow-Methods", allowWebDavMethods)
-			c.Next()
-			return
+			if allowed {
+				c.Header("Access-Control-Allow-Origin", origin)
+				c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+				c.Header("Access-Control-Allow-Credentials", "true")
+				c.Header("Access-Control-Max-Age", "86400")
+			}
 		}
 
-		if strings.HasPrefix(c.Request.RequestURI, "/caldav") {
-			c.Header("Access-Control-Allow-Methods", allowCalDavMethods)
-			c.Next()
-			return
-		}
-
-		if strings.HasPrefix(c.Request.RequestURI, "/carddav") {
-			c.Header("Access-Control-Allow-Methods", allowCardDavMethods)
-			c.Next()
-			return
-		}
-
-		c.Header("Access-Control-Allow-Methods", allowMethods)
-
-		switch c.Request.Method {
-		case http.MethodOptions:
-			c.Header("Access-Control-Max-Age", "600")
-			c.AbortWithStatus(204)
+		if method == "OPTIONS" {
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 
@@ -839,19 +841,47 @@ func corsMiddleware() gin.HandlerFunc {
 // jwtMiddleware is a middleware to check jwt token
 // REF: https://github.com/siyuan-note/siyuan/issues/11364
 func jwtMiddleware(c *gin.Context) {
-	if token := model.ParseXAuthToken(c.Request); token != nil {
-		// c.Request.Header.Del(model.XAuthTokenKey)
-		if token.Valid {
-			claims := model.GetTokenClaims(token)
-			c.Set(model.ClaimsContextKey, claims)
-			c.Set(model.RoleContextKey, model.GetClaimRole(claims))
-			c.Next()
-			return
-		}
+	if !model.Conf.System.ServerMode {
+		c.Next()
+		return
 	}
-	c.Set(model.RoleContextKey, model.RoleVisitor)
-	c.Next()
-	return
+
+	// Skip authentication for certain paths
+	path := c.Request.URL.Path
+	if path == "/api/auth/login" || path == "/api/auth/register" {
+		c.Next()
+		return
+	}
+
+	// Get token from header
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": -1, "msg": "missing authorization header"})
+		return
+	}
+
+	// Parse token
+	tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(model.Conf.System.JWTSecret), nil
+	})
+
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": -1, "msg": "invalid token"})
+		return
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// Add claims to context
+		c.Set("userID", claims["userID"])
+		c.Next()
+	} else {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": -1, "msg": "invalid token claims"})
+		return
+	}
 }
 
 func serveFixedStaticFiles(ginServer *gin.Engine) {

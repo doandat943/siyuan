@@ -1,52 +1,57 @@
-FROM node:21 AS NODE_BUILD
+FROM golang:1.21-alpine AS build-backend
 
 WORKDIR /go/src/github.com/siyuan-note/siyuan/
-ADD . /go/src/github.com/siyuan-note/siyuan/
-RUN apt-get update && \
-    apt-get install -y jq
+COPY . .
+
+RUN apk add --no-cache gcc musl-dev git && \
+    cd kernel && \
+    go build --tags fts5 -v -ldflags "-s -w -X github.com/siyuan-note/siyuan/kernel/util.Mode=prod" && \
+    cd .. && \
+    mkdir -p /opt/siyuan/kernel && \
+    mv kernel/kernel /opt/siyuan/kernel && \
+    cp -r kernel/appearance/ /opt/siyuan/ && \
+    cp -r kernel/guide/ /opt/siyuan/
+
+FROM node:18-alpine AS build-frontend
+
+WORKDIR /go/src/github.com/siyuan-note/siyuan/
+COPY . .
+
 RUN cd app && \
-packageManager=$(jq -r '.packageManager' package.json) && \
-if [ -n "$packageManager" ]; then \
-    npm install -g $packageManager; \
-else \
-    echo "No packageManager field found in package.json"; \
-    npm install -g pnpm; \
-fi && \
-pnpm install --registry=http://registry.npmjs.org/ --silent && \
-pnpm run build
-RUN apt-get purge -y jq
-RUN apt-get autoremove -y
-RUN rm -rf /var/lib/apt/lists/*
-
-FROM golang:alpine AS GO_BUILD
-WORKDIR /go/src/github.com/siyuan-note/siyuan/
-COPY --from=NODE_BUILD /go/src/github.com/siyuan-note/siyuan/ /go/src/github.com/siyuan-note/siyuan/
-ENV GO111MODULE=on
-ENV CGO_ENABLED=1
-RUN apk add --no-cache gcc musl-dev && \
-    cd kernel && go build --tags fts5 -v -ldflags "-s -w" && \
-    mkdir /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/app/appearance/ /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/app/stage/ /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/app/guide/ /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/app/changelogs/ /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/kernel/kernel /opt/siyuan/ && \
-    mv /go/src/github.com/siyuan-note/siyuan/kernel/entrypoint.sh /opt/siyuan/entrypoint.sh && \
-    find /opt/siyuan/ -name .git | xargs rm -rf
+    npm install && \
+    npm run build && \
+    cd .. && \
+    mkdir -p /opt/siyuan/stage && \
+    cp -r app/build/* /opt/siyuan/stage/
 
 FROM alpine:latest
-LABEL maintainer="Liang Ding<845765@qq.com>"
 
-WORKDIR /opt/siyuan/
-COPY --from=GO_BUILD /opt/siyuan/ /opt/siyuan/
+COPY --from=build-backend /opt/siyuan /opt/siyuan
+COPY --from=build-frontend /opt/siyuan/stage /opt/siyuan/stage
+COPY kernel/entrypoint.sh /opt/siyuan/
 
-RUN apk add --no-cache ca-certificates tzdata su-exec && \
-    chmod +x /opt/siyuan/entrypoint.sh
+RUN apk add --no-cache ca-certificates tzdata && \
+    chmod +x /opt/siyuan/entrypoint.sh && \
+    addgroup -S siyuan && \
+    adduser -S -G siyuan siyuan && \
+    chown -R siyuan:siyuan /opt/siyuan
 
-ENV TZ=Asia/Shanghai
-ENV HOME=/home/siyuan
-ENV RUN_IN_CONTAINER=true
+USER siyuan
+WORKDIR /opt/siyuan
+
+ENV PUID=1000 \
+    PGID=1000 \
+    TZ=Asia/Shanghai \
+    SIYUAN_WORKSPACE_PATH=/siyuan/workspace \
+    SIYUAN_ACCESS_AUTH_CODE='' \
+    SIYUAN_SERVER_MODE=true \
+    SIYUAN_SERVER_HOST=0.0.0.0 \
+    SIYUAN_SERVER_PORT=6806 \
+    SIYUAN_JWT_SECRET='' \
+    SIYUAN_CORS_ORIGINS='*'
+
 EXPOSE 6806
 
+VOLUME /siyuan/workspace
+
 ENTRYPOINT ["/opt/siyuan/entrypoint.sh"]
-CMD ["/opt/siyuan/kernel"]

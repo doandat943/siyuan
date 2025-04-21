@@ -8,24 +8,32 @@ USER_NAME=${USER_NAME:-siyuan}
 GROUP_NAME=${GROUP_NAME:-siyuan}
 WORKSPACE_DIR="/siyuan/workspace"
 
-# Get or create group
-group_name="${GROUP_NAME}"
-if getent group "${PGID}" > /dev/null 2>&1; then
-    group_name=$(getent group "${PGID}" | cut -d: -f1)
-    echo "Using existing group: ${group_name} (${PGID})"
-else
-    echo "Creating group ${group_name} (${PGID})"
-    addgroup --gid "${PGID}" "${group_name}"
+# Set user and group IDs
+if [ ! -z "${PUID}" ] && [ ! -z "${PGID}" ]; then
+    if [ -z "$(getent group ${PGID})" ]; then
+        addgroup -g ${PGID} siyuan
+    fi
+    if [ -z "$(getent passwd ${PUID})" ]; then
+        adduser -D -H -G siyuan -u ${PUID} siyuan
+    fi
+    chown -R ${PUID}:${PGID} /opt/siyuan
 fi
 
-# Get or create user
-user_name="${USER_NAME}"
-if getent passwd "${PUID}" > /dev/null 2>&1; then
-    user_name=$(getent passwd "${PUID}" | cut -d: -f1)
-    echo "Using existing user ${user_name} (PUID: ${PUID}, PGID: ${PGID})"
-else
-    echo "Creating user ${user_name} (PUID: ${PUID}, PGID: ${PGID})"
-    adduser --uid "${PUID}" --ingroup "${group_name}" --disabled-password --gecos "" "${user_name}"
+# Set timezone
+if [ ! -z "${TZ}" ]; then
+    cp /usr/share/zoneinfo/${TZ} /etc/localtime
+    echo "${TZ}" > /etc/timezone
+fi
+
+# Create workspace directory if it doesn't exist
+if [ ! -d "${SIYUAN_WORKSPACE_PATH}" ]; then
+    mkdir -p "${SIYUAN_WORKSPACE_PATH}"
+    chown -R siyuan:siyuan "${SIYUAN_WORKSPACE_PATH}"
+fi
+
+# Generate random JWT secret if not provided
+if [ -z "${SIYUAN_JWT_SECRET}" ]; then
+    SIYUAN_JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 32 | head -n 1)
 fi
 
 # Parse command line arguments for --workspace option or SIYUAN_WORKSPACE_PATH env variable

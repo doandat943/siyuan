@@ -19,6 +19,8 @@
 package main
 
 import (
+	"flag"
+
 	"github.com/siyuan-note/siyuan/kernel/cache"
 	"github.com/siyuan-note/siyuan/kernel/job"
 	"github.com/siyuan-note/siyuan/kernel/model"
@@ -28,10 +30,37 @@ import (
 )
 
 func main() {
+	// Parse command line arguments
+	workspace := flag.String("workspace", "", "workspace path")
+	accessAuthCode := flag.String("accessAuthCode", "", "access auth code")
+	serverMode := flag.Bool("serverMode", false, "run in server mode")
+	serverHost := flag.String("serverHost", "0.0.0.0", "server host")
+	serverPort := flag.String("serverPort", "6806", "server port")
+	jwtSecret := flag.String("jwtSecret", "", "JWT secret key")
+	corsOrigins := flag.String("corsOrigins", "*", "allowed CORS origins")
+	flag.Parse()
+
+	// Initialize system
 	util.Boot()
 
+	// Set configuration from command line arguments
 	model.InitConf()
+	if *workspace != "" {
+		model.Conf.System.WorkspaceDir = *workspace
+	}
+	if *accessAuthCode != "" {
+		model.Conf.System.AccessAuthCode = *accessAuthCode
+	}
+	model.Conf.System.ServerMode = *serverMode
+	model.Conf.System.ServerHost = *serverHost
+	model.Conf.System.ServerPort = *serverPort
+	model.Conf.System.JWTSecret = *jwtSecret
+	model.Conf.System.CORSOrigins = []string{*corsOrigins}
+
+	// Start server
 	go server.Serve(false)
+
+	// Initialize other components
 	model.InitAppearance()
 	sql.InitDatabase(false)
 	sql.InitHistoryDatabase(false)
